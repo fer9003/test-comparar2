@@ -1,0 +1,106 @@
+parameters:
+- name: CONTAINER_REGISTRY_SERVICE_CONNECTION
+  type: string
+- name: IMAGE_JAVASCRIPT_NODEJS_YARN_BUILD
+  type: string
+- name: YARN_CACHE_FOLDER
+  type: string
+
+stages:
+- stage: versioning
+  condition: and(succeeded(),or(startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'),startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/')))
+  displayName: Versioning
+  jobs:
+  - job: yarn_versioning
+    displayName: Yarn Versioning
+    pool:
+      vmImage: 'ubuntu-latest'
+    container: 
+      image: ${{ parameters.IMAGE_JAVASCRIPT_NODEJS_YARN_BUILD }}
+      endpoint: ${{ parameters.CONTAINER_REGISTRY_SERVICE_CONNECTION }}
+    steps: 
+      - checkout: self
+        persistCredentials: true
+
+      - task: Cache@2
+        displayName: "Restore Cache"
+        inputs:
+          key: '"yarn" | "$(Agent.OS)" | package.json'
+          restoreKeys: |
+            yarn | "$(Agent.OS)"
+          path: ${{ parameters.YARN_CACHE_FOLDER }}
+
+      - task: CmdLine@2
+        displayName: Create Build Folder
+        inputs:
+          script: |
+            mkdir -p build;
+
+      - task: CmdLine@2
+        displayName: Create Version
+        inputs:
+          script: |
+            echo "build/.." > $(Build.SourcesDirectory)/build/PROJECT_SOURCE_ROOT.txt;
+            sed -n 's,.*"sourceRoot":\(.*\).*,\1,p' package.json | tr -d '"' | tr -d ',' | tr -d ' ' | sed 's/\/$//' >> $(Build.SourcesDirectory)/build/PROJECT_SOURCE_ROOT.txt;       
+
+            for DIRECTORY in $(cat $(Build.SourcesDirectory)/build/PROJECT_SOURCE_ROOT.txt)
+            do
+
+              if [[ $(Build.SourceBranch) == *'release/'* ]]
+              then
+                cd $(Build.SourcesDirectory)/$DIRECTORY;
+
+                FILE=$(Build.SourcesDirectory)/build/PROJECT_VERSION.txt
+                if [ -f "$FILE" ]; then
+                    yarn version --new-version $(cat $(Build.SourcesDirectory)/build/PROJECT_VERSION.txt) --no-git-tag-version;
+                else
+                    yarn version --minor --no-git-tag-version;
+                    cat ./package.json | grep -m 1 version | sed 's/[^0-9.]//g' > $(Build.SourcesDirectory)/build/PROJECT_VERSION.txt;
+                fi
+                
+              fi
+
+
+              if [[ $(Build.SourceBranch) == *'hotfix/'* ]]
+              then
+                cd $(Build.SourcesDirectory)/$DIRECTORY;
+
+                FILE=$(Build.SourcesDirectory)/build/PROJECT_VERSION.txt
+                if [ -f "$FILE" ]; then
+                    yarn version --new-version $(cat $(Build.SourcesDirectory)/build/PROJECT_VERSION.txt) --no-git-tag-version;
+                else
+                    yarn version --patch --no-git-tag-version;
+                    cat ./package.json | grep -m 1 version | sed 's/[^0-9.]//g' > $(Build.SourcesDirectory)/build/PROJECT_VERSION.txt;
+                fi
+                
+              fi
+
+            done
+
+            cd $(Build.SourcesDirectory);
+            cp package.json $(Build.SourcesDirectory)/build/package.json; 
+
+
+      - task: CmdLine@2
+        displayName: Push New Version
+        inputs:
+          script: |
+            echo new
+            cd $(Build.SourcesDirectory);
+            ls -lt $(Build.SourcesDirectory);
+            ls -lt $(Build.SourcesDirectory)/build
+            export NEW_VERSION=$(cat $(Build.SourcesDirectory)/build/PROJECT_VERSION.txt);
+            echo $NEW_VERSION
+            
+            git config user.name "Azure DevOps"
+            git config user.email "devops@pichincha.com"
+            git add package.json
+            git add '**/package.json'
+            git commit -m "release: $NEW_VERSION [ci skip]";
+            git push -u origin HEAD:$(echo $(Build.SourceBranch) | cut -c12-);
+
+      - task: PublishPipelineArtifact@1
+        displayName: Save Build Folder Content
+        inputs:
+          targetPath: $(Build.SourcesDirectory)/build
+          artifactName: Versioning  
