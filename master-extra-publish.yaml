@@ -1,0 +1,70 @@
+parameters:
+- name: CONTAINER_REGISTRY_SERVICE_CONNECTION
+  type: string
+- name: STAGE_DEPENDENS
+  type: string
+- name: IMAGE_JAVASCRIPT_NODEJS_YARN_BUILD
+  type: string
+- name: YARN_CACHE_FOLDER
+  type: string
+
+stages:
+- stage: deploy
+  dependsOn: ${{ parameters.STAGE_DEPENDENS }}
+  condition: and(eq(variables['Build.SourceBranch'], 'refs/heads/master'),eq(canceled(),False),eq(failed(),False),eq(always(),True))
+  displayName: Publish
+  jobs:
+  - job: deploy
+    displayName: Yarn Publish
+    pool:
+      vmImage: 'ubuntu-latest'
+    container: 
+      image: ${{ parameters.IMAGE_JAVASCRIPT_NODEJS_YARN_BUILD }}
+      endpoint: ${{ parameters.CONTAINER_REGISTRY_SERVICE_CONNECTION }}
+    steps: 
+      - task: Cache@2
+        displayName: "Restore Cache"
+        inputs:
+          key: '"yarn" | "$(Agent.OS)" | package.json'
+          restoreKeys: |
+            yarn | "$(Agent.OS)"
+          path: ${{ parameters.YARN_CACHE_FOLDER }}
+
+      - task: DownloadPipelineArtifact@2
+        displayName: Download Build Folder Content
+        inputs:
+          artifact: Build
+          path: $(Build.SourcesDirectory)/build
+
+      - task: CmdLine@2
+        displayName: Validate Version
+        inputs:
+          script: |
+            cp build/package.json ./
+
+      - task: npmAuthenticate@0
+        displayName: Authenticate Registry
+        inputs:
+          workingFile: .npmrc
+
+      - task: CmdLine@2
+        displayName: Validate .npmignore
+        inputs:
+          script: |
+            FILE=.npmrc
+            if [ -f "$FILE" ]; then
+                echo "Si existe archivo .npmignore, esto tendrá mayor jerarquia que lo que exista en .gitignore ..."
+            else 
+                echo "##[warning]No existe archivo .npmignore, es posible que la libreria no se exporte correctamente, dado que algunos o todos los archivos a exportar sean excluidos por .gitignore..."
+                touch .npmignore
+            fi
+      
+      - task: CmdLine@2
+        displayName: Publish
+        inputs:
+          script: |
+            mkdir -p publish
+            cp -rf build/. publish
+            cp .npmignore publish
+            cd publish
+            yarn publish
